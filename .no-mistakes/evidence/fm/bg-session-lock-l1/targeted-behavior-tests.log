@@ -1,0 +1,9 @@
+ok - a background session at startup stays read-only and leaves a free lock free
+ok - the explicit take-helm path acquires a free lock
+ok - take-helm leaves a live holder's lock in place
+ok - a background session at startup leaves a stale foreign lock in place
+ok - the explicit take-helm path acquires a stale lock
+ok - an interactive session still acquires the fleet lock
+ok - background startup leaves its live same-session lock untouched and stays read-only
+ok - background respawn reclaims its stale lock only after explicit take-helm
+ok - a non-Claude session still acquires the lock when the background variable is set
