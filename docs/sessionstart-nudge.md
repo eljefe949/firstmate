@@ -50,6 +50,7 @@ Codex's interactive TUI has no tracked session-open, compaction, or re-emit chan
 The run tier exists because the nudge can only ask.
 An agent can defer an instruction, including when a first-command skill has its own read-only path.
 Running the digest through the native adapter removes that discretion, so even a session whose first command is a skill has already taken the helm.
+A Claude background session is the exception, and [Claude background sessions](#claude-background-sessions) owns that rule.
 
 The nudge tier remains the floor for harnesses that cannot carry hook stdout into model context.
 It is never a second contract: both tiers end in the same `bin/fm-session-start.sh`.
@@ -72,6 +73,9 @@ A re-emit (`--reemit`) reprints the digest for a process that already has the he
 | `resume`, `reload`, `fork` | Delegate to the nudge wrapper | Prior context is restored, so re-running is redundant when the lock is still ours and an instruction is enough when a new process resumed an old session. |
 | unreadable or unrecognized | Full digest | Taking the helm redundantly is cheap and idempotent; not taking it is the bug this tier exists to fix. |
 
+A Claude background session still receives that full digest and does not take the helm.
+[Claude background sessions](#claude-background-sessions) owns that exception.
+
 ### Change from the previous nudge matcher
 
 This routing deliberately inverts the previous nudge matcher, which fired on `startup|resume|clear` and excluded `compact`.
@@ -91,6 +95,9 @@ The full digest updates the completion record in this order:
 1. It acquires the lock.
 2. It clears the completion record.
 3. It republishes the lock owner's pid only after every stage completes.
+
+A Claude background session that does not take the helm skips this update.
+[Claude background sessions](#claude-background-sessions) owns that exception.
 
 So `clear` or `compact` cannot skip startup sweeps after a truncated run.
 
@@ -233,6 +240,17 @@ Claude is a run-tier harness.
 `.claude/settings.json` registers one unmatched `SessionStart` hook, invoked through `CLAUDE_PROJECT_DIR` with a 180s timeout.
 The wrapper reads `source` from the hook payload.
 Native stdout context injection is supported.
+
+### Claude background sessions
+
+A Claude background session is one whose environment sets `CLAUDE_CODE_SESSION_KIND=bg`.
+At session open it does not acquire the fleet lock.
+It receives the ordinary read-only digest, which names `bin/fm-session-start.sh --take-helm`.
+That command acquires the lock when the lock is free or stale, the same way an ordinary startup does, and it leaves a lock a live session holds in place.
+A background session that already holds the lock keeps it, including after its own respawn under the same session id.
+Interactive sessions are unchanged.
+`bin/fm-session-start.sh` owns the exact decision.
+End a daemon background session with `claude stop <id>`, not `kill`, because the daemon respawns that worker under the same session id.
 
 ### Codex exec
 
@@ -410,6 +428,12 @@ Through the extension's public event surface, the same portable suite proves:
 - Truncation.
 - Ineligible stand-down.
 - Compaction cancellation.
+
+### Claude background session lock
+
+`tests/fm-session-start.test.sh` proves a Claude background session leaves a free fleet lock free and names `bin/fm-session-start.sh --take-helm`.
+The same suite proves that command acquires a free lock and a stale lock, that it leaves a live holder in place, and that an interactive session still acquires a free lock.
+It also proves startup leaves a stale lock from another session in place, and that a background session keeps a lock it already holds, including a stale lock recorded under the same session id.
 
 ### Runtime bound test
 

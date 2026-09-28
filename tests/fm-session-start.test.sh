@@ -8,6 +8,10 @@
 #   - the lock-refusal read-only path: banner leads, every mutating step is
 #     skipped (including bootstrap's seven mutating sweeps, verified by their
 #     ABSENCE), the digest still completes
+#   - a Claude background session (CLAUDE_CODE_SESSION_KIND=bg) leaves a free
+#     or foreign stale lock untouched, --take-helm acquires a free or stale
+#     lock without stealing a live holder, and an interactive session still
+#     acquires a free lock
 #   - output section ordering: the safety preamble leads unchanged, live fleet
 #     state precedes the curated memory a truncated tail may take, and the
 #     read-once contract precedes both
@@ -558,27 +562,56 @@ SH
 # Drop every harness env marker from bin/fm-harness.sh detect_own so the
 # surrounding interactive shell cannot leak past the suite's fake ps harness.
 # Markers today: CLAUDECODE (claude), PI_CODING_AGENT plus FM_PI_HARNESS
-# (Pi family), GROK_AGENT (grok).
+# (Pi family), GROK_AGENT (grok), plus CLAUDE_CODE_SESSION_KIND and
+# CLAUDE_BG_BACKEND so a surrounding Claude background session cannot make an
+# interactive case leave the lock free.
 # codex and opencode have no env markers (ancestry only). Without this, a local
 # claude/pi/grok session fails cases that pin a different fake harness while CI
 # (no ambient markers) still passes.
 run_session_start() {
   local home=$1 root=$2 path=$3 pi_harness=${4:-}
   if [ -n "$pi_harness" ]; then
-    env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS="$pi_harness" \
+    env -u CLAUDECODE -u GROK_AGENT -u CLAUDE_CODE_SESSION_KIND -u CLAUDE_BG_BACKEND \
+      PI_CODING_AGENT=true FM_PI_HARNESS="$pi_harness" \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
       "$SESSION_START"
   else
     env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+      -u CLAUDE_CODE_SESSION_KIND -u CLAUDE_BG_BACKEND \
       FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
       "$SESSION_START"
   fi
 }
 
+# run_bg_session_start <home> <root> <path> [fm-session-start args...]
+# Claude background session: CLAUDE_CODE_SESSION_KIND=bg, with optional
+# FM_TEST_SESSION_ID and FM_TEST_CLAUDE_PID for same-session ownership.
+run_bg_session_start() {
+  local home=$1 root=$2 path=$3
+  shift 3
+  local -a session_env
+  session_env=(-u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT -u CLAUDE_BG_BACKEND)
+  if [ -n "${FM_TEST_SESSION_ID:-}" ]; then
+    session_env+=("CLAUDE_CODE_SESSION_ID=$FM_TEST_SESSION_ID")
+  else
+    session_env+=(-u CLAUDE_CODE_SESSION_ID)
+  fi
+  if [ -n "${FM_TEST_CLAUDE_PID:-}" ]; then
+    session_env+=("CLAUDE_PID=$FM_TEST_CLAUDE_PID")
+  else
+    session_env+=(-u CLAUDE_PID)
+  fi
+  env "${session_env[@]}" \
+    CLAUDE_CODE_SESSION_KIND=bg \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
+    "$SESSION_START" "$@"
+}
+
 run_pi_session_start() {  # <home> <root> <path> [fm-session-start args...]
   local home=$1 root=$2 path=$3
   shift 3
-  env -u CLAUDECODE -u GROK_AGENT PI_CODING_AGENT=true FM_PI_HARNESS=pi \
+  env -u CLAUDECODE -u GROK_AGENT -u CLAUDE_CODE_SESSION_KIND -u CLAUDE_BG_BACKEND \
+    PI_CODING_AGENT=true FM_PI_HARNESS=pi \
     FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
     "$SESSION_START" "$@"
@@ -588,6 +621,7 @@ run_named_harness_session_start() {  # <harness> <home> <root> <path> [fm-sessio
   local harness=$1 home=$2 root=$3 path=$4
   shift 4
   env -u CLAUDECODE -u PI_CODING_AGENT -u FM_PI_HARNESS -u GROK_AGENT \
+    -u CLAUDE_CODE_SESSION_KIND -u CLAUDE_BG_BACKEND \
     FM_FAKE_HARNESS="$harness" FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
     FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$path" \
     "$SESSION_START" "$@"
@@ -901,6 +935,278 @@ EOF
   [ -s "$home/state/.wake-queue" ] || fail "lock publication failure allowed the wake queue to mutate"
 
   pass "session start stays read-only when lock ownership cannot be published"
+}
+
+# A free fleet lock stays absent, and the digest names the explicit helm command.
+test_background_session_startup_leaves_free_lock_free() {
+  local rec root home fakebin out status
+  rec=$(new_world bg-startup-free)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  status=0
+  out=$(run_bg_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+
+  expect_code 0 "$status" "background session start must exit 0 without taking the helm"
+  assert_contains "$out" "BACKGROUND CLAUDE SESSION DID NOT TAKE THE HELM" \
+    "background startup did not announce that it left the helm"
+  assert_contains "$out" "bin/fm-session-start.sh --take-helm" \
+    "background startup did not name the take-the-helm command"
+  assert_contains "$out" "skipped (read-only session)" \
+    "background startup did not stay on the read-only wake path"
+  assert_not_contains "$out" "lock acquired:" \
+    "background startup acquired the fleet lock"
+  [ ! -e "$home/state/.lock" ] && [ ! -L "$home/state/.lock" ] \
+    || fail "background startup created a fleet lock: $(cat "$home/state/.lock" 2>/dev/null || true)"
+  [ ! -e "$home/state/.session-start-complete" ] \
+    || fail "background startup recorded a completed helm"
+
+  pass "a background session at startup stays read-only and leaves a free lock free"
+}
+
+test_background_session_take_helm_acquires_free_lock() {
+  local rec root home fakebin out status lock_pid
+  rec=$(new_world bg-take-helm)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  status=0
+  out=$(run_bg_session_start "$home" "$root" "$fakebin:$BASE_PATH" --take-helm) || status=$?
+
+  expect_code 0 "$status" "take-helm session start must exit 0"
+  assert_contains "$out" "lock acquired: harness pid" \
+    "take-helm did not acquire a free fleet lock"
+  assert_not_contains "$out" "DID NOT TAKE THE HELM" \
+    "take-helm stayed on the background deferral path"
+  [ -f "$home/state/.lock" ] && [ ! -L "$home/state/.lock" ] \
+    || fail "take-helm did not publish a fleet lock"
+  lock_pid=$(cat "$home/state/.lock")
+  case "$lock_pid" in
+    ''|*[!0-9]*) fail "take-helm published a non-numeric fleet lock: $lock_pid" ;;
+  esac
+
+  pass "the explicit take-helm path acquires a free lock"
+}
+
+test_background_session_take_helm_leaves_live_holder() {
+  local rec root home fakebin holder_pid out status
+  rec=$(new_world bg-take-helm-live)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  sleep 300 &
+  holder_pid=$!
+  printf '%s\n' "$holder_pid" > "$home/state/.lock"
+
+  status=0
+  out=$(run_bg_session_start "$home" "$root" "$fakebin:$BASE_PATH" --take-helm) || status=$?
+  kill "$holder_pid" 2>/dev/null || true
+  wait "$holder_pid" 2>/dev/null || true
+
+  expect_code 0 "$status" "take-helm against a live holder must exit 0"
+  assert_contains "$out" "another live firstmate session holds the lock" \
+    "take-helm did not report the live holder"
+  assert_contains "$out" "READ-ONLY SESSION" \
+    "take-helm against a live holder did not stay read-only"
+  assert_not_contains "$out" "lock acquired:" \
+    "take-helm stole a live holder's fleet lock"
+  [ "$(cat "$home/state/.lock")" = "$holder_pid" ] \
+    || fail "take-helm rewrote a live holder's fleet lock"
+
+  pass "take-helm leaves a live holder's lock in place"
+}
+
+# A dead anchor with no same-session sidecar is another session's stale lock.
+# Startup must leave it untouched; --take-helm reclaims it the way an ordinary
+# startup does.
+dead_foreign_lock() {  # <home>
+  local home=$1 dead_pid
+  sleep 30 &
+  dead_pid=$!
+  kill "$dead_pid" 2>/dev/null || true
+  wait "$dead_pid" 2>/dev/null || true
+  printf '%s\n' "$dead_pid" > "$home/state/.lock"
+  rm -f "$home/state/.lock-session"
+  printf '%s\n' "$dead_pid"
+}
+
+test_background_session_startup_leaves_foreign_stale_lock() {
+  local rec root home fakebin dead_pid out status
+  rec=$(new_world bg-startup-stale-foreign)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  dead_pid=$(dead_foreign_lock "$home")
+
+  status=0
+  out=$(run_bg_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+
+  expect_code 0 "$status" "background startup against a stale foreign lock must exit 0"
+  assert_contains "$out" "BACKGROUND CLAUDE SESSION DID NOT TAKE THE HELM" \
+    "background startup reclaimed a stale foreign lock"
+  assert_not_contains "$out" "lock acquired:" \
+    "background startup acquired a stale foreign lock"
+  [ "$(cat "$home/state/.lock")" = "$dead_pid" ] \
+    || fail "background startup rewrote a stale foreign lock: $(cat "$home/state/.lock" 2>/dev/null || true)"
+
+  pass "a background session at startup leaves a stale foreign lock in place"
+}
+
+test_background_session_take_helm_acquires_stale_lock() {
+  local rec root home fakebin dead_pid out status lock_pid
+  rec=$(new_world bg-take-helm-stale)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  dead_pid=$(dead_foreign_lock "$home")
+
+  status=0
+  out=$(run_bg_session_start "$home" "$root" "$fakebin:$BASE_PATH" --take-helm) || status=$?
+
+  expect_code 0 "$status" "take-helm against a stale lock must exit 0"
+  assert_contains "$out" "lock acquired: harness pid" \
+    "take-helm did not acquire a stale lock"
+  assert_not_contains "$out" "DID NOT TAKE THE HELM" \
+    "take-helm stayed on the background deferral path for a stale lock"
+  [ -f "$home/state/.lock" ] && [ ! -L "$home/state/.lock" ] \
+    || fail "take-helm did not publish a fleet lock over a stale one"
+  lock_pid=$(cat "$home/state/.lock")
+  [ "$lock_pid" != "$dead_pid" ] \
+    || fail "take-helm left the dead foreign anchor in place"
+  case "$lock_pid" in
+    ''|*[!0-9]*) fail "take-helm published a non-numeric fleet lock: $lock_pid" ;;
+  esac
+
+  pass "the explicit take-helm path acquires a stale lock"
+}
+
+test_interactive_session_still_acquires_lock() {
+  local rec root home fakebin out status lock_pid
+  rec=$(new_world interactive-acquires)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+
+  status=0
+  out=$(run_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+
+  expect_code 0 "$status" "interactive session start must exit 0"
+  assert_contains "$out" "lock acquired: harness pid" \
+    "interactive session did not acquire a free fleet lock"
+  assert_not_contains "$out" "DID NOT TAKE THE HELM" \
+    "interactive session was treated as a background session"
+  [ -f "$home/state/.lock" ] && [ ! -L "$home/state/.lock" ] \
+    || fail "interactive session did not publish a fleet lock"
+  lock_pid=$(cat "$home/state/.lock")
+  case "$lock_pid" in
+    ''|*[!0-9]*) fail "interactive session published a non-numeric fleet lock: $lock_pid" ;;
+  esac
+
+  pass "an interactive session still acquires the fleet lock"
+}
+
+# The recorded pid is this test process, which the fake ps reports as claude,
+# so ancestry ownership already holds and startup must confirm rather than defer.
+test_background_session_keeps_same_session_lock() {
+  local rec root home fakebin out status
+  rec=$(new_world bg-keeps-lock)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  printf '%s\n' "$$" > "$home/state/.lock"
+  printf '%s\n' 'sess-keep' > "$home/state/.lock-session"
+
+  status=0
+  out=$(FM_FAKE_HARNESS_PID=$$ FM_TEST_SESSION_ID=sess-keep FM_TEST_CLAUDE_PID=$$ \
+    run_bg_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+
+  expect_code 0 "$status" "same-session background startup must exit 0"
+  assert_contains "$out" "lock acquired: harness pid $$" \
+    "background session did not keep the lock it already holds"
+  assert_not_contains "$out" "DID NOT TAKE THE HELM" \
+    "background session dropped a lock it already holds"
+  [ "$(cat "$home/state/.lock")" = "$$" ] \
+    || fail "same-session confirm rewrote a live lock line"
+  [ "$(cat "$home/state/.lock-session")" = "sess-keep" ] \
+    || fail "same-session confirm replaced the recorded session id"
+
+  pass "a background session that already holds the lock keeps it"
+}
+
+# Dead anchor, same trusted session id: the respawn path must reclaim through
+# fm-lock.sh instead of leaving the lock stale and going read-only.
+test_background_session_reclaims_same_session_stale_lock() {
+  local rec root home fakebin out status dead_pid
+  rec=$(new_world bg-reclaims-stale)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_claude "$fakebin"
+  sleep 30 &
+  dead_pid=$!
+  kill "$dead_pid" 2>/dev/null || true
+  wait "$dead_pid" 2>/dev/null || true
+  printf '%s\n' "$dead_pid" > "$home/state/.lock"
+  printf '%s\n' 'sess-reclaim' > "$home/state/.lock-session"
+
+  status=0
+  out=$(FM_FAKE_HARNESS_PID=$$ FM_TEST_SESSION_ID=sess-reclaim FM_TEST_CLAUDE_PID=$$ \
+    run_bg_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
+
+  expect_code 0 "$status" "same-session stale reclaim must exit 0"
+  assert_contains "$out" "lock acquired: harness pid $$" \
+    "background respawn did not reclaim its own stale lock"
+  [ "$(cat "$home/state/.lock")" = "$$" ] \
+    || fail "same-session reclaim left the dead anchor in place: $(cat "$home/state/.lock")"
+  [ "$(cat "$home/state/.lock-session")" = "sess-reclaim" ] \
+    || fail "same-session reclaim replaced the recorded session id"
+
+  pass "a background session reclaims its own stale same-session lock"
+}
+
+test_non_claude_session_ignores_background_kind() {
+  local rec root home fakebin out status
+  rec=$(new_world pi-ignores-bg-kind)
+  IFS='|' read -r root home fakebin <<EOF
+$rec
+EOF
+  make_fake_toolchain "$fakebin"
+  make_fake_ps_harness "$fakebin" pi
+
+  status=0
+  # run_pi_session_start strips the background variable so the rest of the suite
+  # stays hermetic. This case must pass the variable through on purpose.
+  out=$(env -u CLAUDECODE -u GROK_AGENT -u CLAUDE_BG_BACKEND \
+    PI_CODING_AGENT=true FM_PI_HARNESS=pi \
+    FM_FAKE_HARNESS_PID="$SESSION_START_TEST_HARNESS_PID" \
+    CLAUDE_CODE_SESSION_KIND=bg \
+    FM_HOME="$home" FM_ROOT_OVERRIDE="$root" PATH="$fakebin:$BASE_PATH" \
+    "$SESSION_START") || status=$?
+
+  expect_code 0 "$status" "pi session start must exit 0"
+  assert_contains "$out" "lock acquired: harness pid" \
+    "a non-Claude session with the background variable set did not acquire the lock"
+  assert_not_contains "$out" "DID NOT TAKE THE HELM" \
+    "a non-Claude session was treated as a Claude background session"
+
+  pass "a non-Claude session still acquires the lock when the background variable is set"
 }
 
 test_trace_context_effective_state_is_frozen_after_lock() {
@@ -3007,6 +3313,15 @@ EOF
 test_context_digest_absent_empty_present
 test_lock_refusal_read_only_path
 test_lock_write_failure_read_only_path
+test_background_session_startup_leaves_free_lock_free
+test_background_session_take_helm_acquires_free_lock
+test_background_session_take_helm_leaves_live_holder
+test_background_session_startup_leaves_foreign_stale_lock
+test_background_session_take_helm_acquires_stale_lock
+test_interactive_session_still_acquires_lock
+test_background_session_keeps_same_session_lock
+test_background_session_reclaims_same_session_stale_lock
+test_non_claude_session_ignores_background_kind
 test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner
 test_output_ordering_diagnostics_lead

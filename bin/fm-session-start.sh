@@ -198,7 +198,7 @@
 # Hosts without timeout, gtimeout, or perl use the shared pure-Bash watchdog, so
 # the digest never runs without the same hard bound and process-group cleanup.
 #
-# Usage: fm-session-start.sh [--reemit] [--source <source>]
+# Usage: fm-session-start.sh [--reemit] [--source <source>] [--take-helm]
 #   Prints the full ordered digest to stdout and always exits 0: this is a
 #   reporting command, not a gate. A lock refusal is reported as a loud
 #   banner inline, never a silent failure or a non-zero exit that would make
@@ -232,6 +232,20 @@
 #             current AGENTS.md to print before the bulky digest. The baseline
 #             remains immutable so every later drifted compaction refreshes
 #             again, while an equal baseline emits no instruction refresh.
+#
+#   --take-helm
+#             Explicit helm for a Claude background session, identified by
+#             CLAUDE_CODE_SESSION_KIND=bg on a Claude-shaped ancestry (the
+#             value a live `claude --bg` spare and pty-host export; an
+#             interactive Claude session leaves it unset). Ordinary startup
+#             for that session stays read-only and does not acquire a free
+#             or foreign lock. This flag acquires exactly as an interactive
+#             startup does: a free lock, a stale lock, or a lock this same
+#             session already holds, and it never steals a live holder.
+#             A background session that already holds the lock, including
+#             after its own respawn under the same session id, keeps that
+#             ownership without this flag. Interactive sessions acquire
+#             either way. The decision lives here; fm-lock.sh is unchanged.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -244,11 +258,16 @@ COMPLETION_FILE="$STATE/.session-start-complete"
 AGENTS_BASELINE_FILE="$STATE/.session-start-agents-baseline"
 
 REEMIT=0
+TAKE_HELM=0
 SESSION_SOURCE=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --reemit)
       REEMIT=1
+      shift
+      ;;
+    --take-helm)
+      TAKE_HELM=1
       shift
       ;;
     --source)
@@ -265,7 +284,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     *)
       printf 'fm-session-start: unknown argument: %s\n' "$1" >&2
-      printf 'usage: fm-session-start.sh [--reemit] [--source <source>]\n' >&2
+      printf 'usage: fm-session-start.sh [--reemit] [--source <source>] [--take-helm]\n' >&2
       exit 2
       ;;
   esac
@@ -300,25 +319,15 @@ if [ -z "${FM_SESSION_START_STAGE_FILE:-}" ]; then
     # is lost, so the child still runs bounded.
     SESSION_START_STAGE_FILE=/dev/null
   fi
-  if [ "$REEMIT" -eq 1 ]; then
-    if [ -n "$SESSION_SOURCE" ]; then
-      fm_run_timed "$SESSION_START_BUDGET" \
-        env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
-        "$SCRIPT_DIR/fm-session-start.sh" --reemit --source "$SESSION_SOURCE"
-    else
-      fm_run_timed "$SESSION_START_BUDGET" \
-        env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
-        "$SCRIPT_DIR/fm-session-start.sh" --reemit
-    fi
-  elif [ -n "$SESSION_SOURCE" ]; then
-    fm_run_timed "$SESSION_START_BUDGET" \
-      env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
-      "$SCRIPT_DIR/fm-session-start.sh" --source "$SESSION_SOURCE"
-  else
-    fm_run_timed "$SESSION_START_BUDGET" \
-      env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
-      "$SCRIPT_DIR/fm-session-start.sh"
-  fi
+  # Forward every parsed flag. Dropping --take-helm here would make the
+  # child run the ordinary background startup and leave the helm untaken.
+  session_start_child_args=()
+  [ "$REEMIT" -eq 1 ] && session_start_child_args+=(--reemit)
+  [ -n "$SESSION_SOURCE" ] && session_start_child_args+=(--source "$SESSION_SOURCE")
+  [ "$TAKE_HELM" -eq 1 ] && session_start_child_args+=(--take-helm)
+  fm_run_timed "$SESSION_START_BUDGET" \
+    env FM_SESSION_START_STAGE_FILE="$SESSION_START_STAGE_FILE" \
+    "$SCRIPT_DIR/fm-session-start.sh" ${session_start_child_args[@]+"${session_start_child_args[@]}"}
   SESSION_START_RC=$?
   # ANY nonzero child exit is a truncation: the banner contract promises that
   # a stage that cannot print is named. Exit 124 is the bound firing; any
@@ -675,26 +684,82 @@ if [ "$REEMIT" -eq 1 ]; then
 else
   section "SESSION START - $FM_HOME"
 fi
+# True when this process is a Claude background session.
+# CLAUDE_CODE_SESSION_KIND=bg is the vendor signal a live `claude --bg` spare
+# and pty-host export. A walk that resolves only a non-Claude harness returns
+# false so that harness still acquires normally. A walk that fails, or that
+# cannot be re-read, stays true, because treating the signal as absent would
+# take the lock.
+claude_background_session() {
+  [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ] || return 1
+  local pids pid comm args saw_harness=0
+  pids=$(fm_harness_ancestry_pids) || return 0
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 0
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || return 0
+    fm_harness_process_matches "$comm" "$args" || return 0
+    saw_harness=1
+    if [ "${FM_HARNESS_IS_CLAUDE:-0}" -eq 1 ]; then
+      return 0
+    fi
+  done <<EOF
+$pids
+EOF
+  [ "$saw_harness" -eq 1 ] && return 1
+  return 0
+}
+
+# True when this session already owns the lock, including a dead anchor
+# recorded under the same trusted Claude session id. That second case is the
+# respawn reclaim fm-lock.sh already performs; skipping it would drop a helm
+# this session took.
+background_session_already_holds_lock() {
+  fm_session_lock_owned_by_self "$STATE" && return 0
+  fm_session_lock_same_session "$STATE"
+}
+
 # --- 1. lock -----------------------------------------------------------
 stage lock
 subsection "LOCK"
-LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
-LOCK_RC=$?
-printf '%s\n' "$LOCK_OUT"
+# A Claude background session does not call fm-lock.sh unless it already
+# holds the lock or the operator passed --take-helm. The header owns that rule.
+BG_DEFER=0
 READ_ONLY=0
-if [ "$LOCK_RC" -ne 0 ]; then
+if [ "$TAKE_HELM" -eq 0 ] && claude_background_session && ! background_session_already_holds_lock; then
+  BG_DEFER=1
   READ_ONLY=1
+  LOCK_OUT='background Claude session left the fleet lock untouched; take the helm with bin/fm-session-start.sh --take-helm when explicitly told (acquires a free or stale lock, and leaves a live holder in place)'
+  printf '%s\n' "$LOCK_OUT"
+else
+  LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
+  LOCK_RC=$?
+  printf '%s\n' "$LOCK_OUT"
+  if [ "$LOCK_RC" -ne 0 ]; then
+    READ_ONLY=1
+  fi
+fi
+if [ "$READ_ONLY" -eq 1 ]; then
   BAR='●━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
   {
     printf '%s\n' "$BAR"
-    printf '●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED\n'
+    if [ "$BG_DEFER" -eq 1 ]; then
+      printf '●  READ-ONLY SESSION - BACKGROUND CLAUDE SESSION DID NOT TAKE THE HELM\n'
+    else
+      printf '●  READ-ONLY SESSION - FLEET LOCK OWNERSHIP WAS NOT VERIFIED\n'
+    fi
     printf '●  %s\n' "$LOCK_OUT"
     printf '●  Skipping every mutating step: stale Herdr child cleanup,\n'
     printf '●  secondmate convergence, secondmate liveness, pending remote handoff retry,\n'
     printf '●  X-mode artifacts, fleet sync, and wake-queue drain. Detect-only bootstrap\n'
     printf '●  diagnostics and the rest of this read-only-safe digest still ran below.\n'
-    printf '●  Operate read-only until this resolves - do not spawn, steer, merge, or\n'
-    printf '●  otherwise mutate fleet state from this session.\n'
+    if [ "$BG_DEFER" -eq 1 ]; then
+      printf '●  Stay read-only until explicitly told to take the helm - do not spawn,\n'
+      printf '●  steer, merge, or otherwise mutate fleet state from this session.\n'
+    else
+      printf '●  Operate read-only until this resolves - do not spawn, steer, merge, or\n'
+      printf '●  otherwise mutate fleet state from this session.\n'
+    fi
     printf '%s\n' "$BAR"
   }
 fi

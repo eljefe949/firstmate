@@ -8,8 +8,9 @@
 # to take the helm, and an agent can defer that, including when a first-command
 # skill has its own read-only path. When the native adapter injects this
 # command's stdout into model context, running the digest here removes that
-# discretion - the helm is taken before the model's first turn, whatever the
-# first turn is.
+# discretion for every session except a Claude background session.
+# bin/fm-session-start.sh owns that exception: the background session stays
+# read-only until --take-helm.
 #
 # Usage: fm-sessionstart-run.sh [--source <source>] [--pi-prerequisite]
 #   --source  The harness's own session-open source. When omitted, the source is
