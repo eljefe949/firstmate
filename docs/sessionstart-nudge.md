@@ -247,7 +247,7 @@ A Claude background session is one whose environment sets `CLAUDE_CODE_SESSION_K
 At session open it does not acquire the fleet lock.
 It receives the ordinary read-only digest, which names `bin/fm-session-start.sh --take-helm`.
 That command acquires the lock when the lock is free or stale, the same way an ordinary startup does, and it leaves a lock a live session holds in place.
-A background session that already holds the lock keeps it, including after its own respawn under the same session id.
+A respawned background session leaves its recorded lock untouched and stays read-only until explicitly told to take the helm.
 Interactive sessions are unchanged.
 `bin/fm-session-start.sh` owns the exact decision.
 End a daemon background session with `claude stop <id>`, not `kill`, because the daemon respawns that worker under the same session id.

@@ -1119,9 +1119,7 @@ EOF
   pass "an interactive session still acquires the fleet lock"
 }
 
-# The recorded pid is this test process, which the fake ps reports as claude,
-# so ancestry ownership already holds and startup must confirm rather than defer.
-test_background_session_keeps_same_session_lock() {
+test_background_session_startup_leaves_same_session_lock() {
   local rec root home fakebin out status
   rec=$(new_world bg-keeps-lock)
   IFS='|' read -r root home fakebin <<EOF
@@ -1137,21 +1135,21 @@ EOF
     run_bg_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
 
   expect_code 0 "$status" "same-session background startup must exit 0"
-  assert_contains "$out" "lock acquired: harness pid $$" \
-    "background session did not keep the lock it already holds"
-  assert_not_contains "$out" "DID NOT TAKE THE HELM" \
-    "background session dropped a lock it already holds"
+  assert_contains "$out" "DID NOT TAKE THE HELM" \
+    "background startup did not defer despite its existing lock"
+  assert_not_contains "$out" "lock acquired:" \
+    "background startup automatically confirmed its existing lock"
+  [ ! -e "$home/state/.session-start-complete" ] \
+    || fail "background startup recorded a completed helm"
   [ "$(cat "$home/state/.lock")" = "$$" ] \
     || fail "same-session confirm rewrote a live lock line"
   [ "$(cat "$home/state/.lock-session")" = "sess-keep" ] \
     || fail "same-session confirm replaced the recorded session id"
 
-  pass "a background session that already holds the lock keeps it"
+  pass "background startup leaves its live same-session lock untouched and stays read-only"
 }
 
-# Dead anchor, same trusted session id: the respawn path must reclaim through
-# fm-lock.sh instead of leaving the lock stale and going read-only.
-test_background_session_reclaims_same_session_stale_lock() {
+test_background_session_startup_defers_same_session_stale_lock() {
   local rec root home fakebin out status dead_pid
   rec=$(new_world bg-reclaims-stale)
   IFS='|' read -r root home fakebin <<EOF
@@ -1170,15 +1168,31 @@ EOF
   out=$(FM_FAKE_HARNESS_PID=$$ FM_TEST_SESSION_ID=sess-reclaim FM_TEST_CLAUDE_PID=$$ \
     run_bg_session_start "$home" "$root" "$fakebin:$BASE_PATH") || status=$?
 
-  expect_code 0 "$status" "same-session stale reclaim must exit 0"
-  assert_contains "$out" "lock acquired: harness pid $$" \
-    "background respawn did not reclaim its own stale lock"
-  [ "$(cat "$home/state/.lock")" = "$$" ] \
-    || fail "same-session reclaim left the dead anchor in place: $(cat "$home/state/.lock")"
+  expect_code 0 "$status" "same-session background respawn must exit 0"
+  assert_contains "$out" "DID NOT TAKE THE HELM" \
+    "background respawn did not stay read-only"
+  assert_not_contains "$out" "lock acquired:" \
+    "background respawn automatically reclaimed its stale lock"
+  [ "$(cat "$home/state/.lock")" = "$dead_pid" ] \
+    || fail "background respawn replaced its dead anchor"
+  [ ! -e "$home/state/.session-start-complete" ] \
+    || fail "background respawn recorded a completed helm"
   [ "$(cat "$home/state/.lock-session")" = "sess-reclaim" ] \
     || fail "same-session reclaim replaced the recorded session id"
 
-  pass "a background session reclaims its own stale same-session lock"
+  status=0
+  out=$(FM_FAKE_HARNESS_PID=$$ FM_TEST_SESSION_ID=sess-reclaim FM_TEST_CLAUDE_PID=$$ \
+    run_bg_session_start "$home" "$root" "$fakebin:$BASE_PATH" --take-helm) || status=$?
+
+  expect_code 0 "$status" "explicit same-session stale reclaim must exit 0"
+  assert_contains "$out" "lock acquired: harness pid $$" \
+    "explicit take-helm did not reclaim the same-session stale lock"
+  [ "$(cat "$home/state/.lock")" = "$$" ] \
+    || fail "explicit take-helm left the dead anchor in place"
+  [ "$(cat "$home/state/.lock-session")" = "sess-reclaim" ] \
+    || fail "explicit take-helm replaced the recorded session id"
+
+  pass "background respawn reclaims its stale lock only after explicit take-helm"
 }
 
 test_non_claude_session_ignores_background_kind() {
@@ -3319,8 +3333,8 @@ test_background_session_take_helm_leaves_live_holder
 test_background_session_startup_leaves_foreign_stale_lock
 test_background_session_take_helm_acquires_stale_lock
 test_interactive_session_still_acquires_lock
-test_background_session_keeps_same_session_lock
-test_background_session_reclaims_same_session_stale_lock
+test_background_session_startup_leaves_same_session_lock
+test_background_session_startup_defers_same_session_stale_lock
 test_non_claude_session_ignores_background_kind
 test_trace_context_effective_state_is_frozen_after_lock
 test_session_lock_concurrent_single_winner

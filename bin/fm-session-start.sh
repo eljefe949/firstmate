@@ -242,10 +242,6 @@
 #             or foreign lock. This flag acquires exactly as an interactive
 #             startup does: a free lock, a stale lock, or a lock this same
 #             session already holds, and it never steals a live holder.
-#             A background session that already holds the lock, including
-#             after its own respawn under the same session id, keeps that
-#             ownership without this flag. Interactive sessions acquire
-#             either way. The decision lives here; fm-lock.sh is unchanged.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -710,23 +706,12 @@ EOF
   return 0
 }
 
-# True when this session already owns the lock, including a dead anchor
-# recorded under the same trusted Claude session id. That second case is the
-# respawn reclaim fm-lock.sh already performs; skipping it would drop a helm
-# this session took.
-background_session_already_holds_lock() {
-  fm_session_lock_owned_by_self "$STATE" && return 0
-  fm_session_lock_same_session "$STATE"
-}
-
 # --- 1. lock -----------------------------------------------------------
 stage lock
 subsection "LOCK"
-# A Claude background session does not call fm-lock.sh unless it already
-# holds the lock or the operator passed --take-helm. The header owns that rule.
 BG_DEFER=0
 READ_ONLY=0
-if [ "$TAKE_HELM" -eq 0 ] && claude_background_session && ! background_session_already_holds_lock; then
+if [ "$TAKE_HELM" -eq 0 ] && claude_background_session; then
   BG_DEFER=1
   READ_ONLY=1
   LOCK_OUT='background Claude session left the fleet lock untouched; take the helm with bin/fm-session-start.sh --take-helm when explicitly told (acquires a free or stale lock, and leaves a live holder in place)'
