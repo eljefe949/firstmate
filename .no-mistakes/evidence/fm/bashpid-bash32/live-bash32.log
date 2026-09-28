@@ -1,0 +1,72 @@
+GNU bash, version 3.2.57(1)-release (arm64-apple-darwin25)
+
+Base regression under PATH without sh:
+/Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M3N246FPTZT7T8NN633JA63T/.test-bash32-live/base-timeout.sh: line 224: BASHPID: unbound variable
+base exit=127
+
+Fixed product under PATH without sh:
+command-ran
+stderr-preserved
+fixed exit=7
+
+Real backlog command through dispatch timeout interface:
+{
+  "ok": true,
+  "action": "add",
+  "task": {
+    "id": "bash32-proof",
+    "title": "Disposable Bash 3.2 dispatch transition proof",
+    "state": "queued",
+    "kind": "ship",
+    "repo": null,
+    "priority": null,
+    "created": "2026-09-28",
+    "closed": null,
+    "deps": [],
+    "hold": null,
+    "links": [],
+    "body": null,
+    "blocked": false,
+    "blocked_by": [],
+    "held": false
+  }
+}
+{
+  "ok": true,
+  "action": "start",
+  "task": {
+    "id": "bash32-proof",
+    "title": "Disposable Bash 3.2 dispatch transition proof",
+    "state": "in_flight",
+    "kind": "ship",
+    "repo": null,
+    "priority": null,
+    "created": "2026-09-28",
+    "closed": null,
+    "deps": [],
+    "hold": null,
+    "links": [],
+    "body": null,
+    "blocked": false,
+    "blocked_by": [],
+    "held": false
+  }
+}
+task:
+  id: bash32-proof
+  title: Disposable Bash 3.2 dispatch transition proof
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: ship
+  repo: "-"
+  priority: "-"
+  created: 2026-09-28
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
