@@ -73,8 +73,7 @@ A re-emit (`--reemit`) reprints the digest for a process that already has the he
 | `resume`, `reload`, `fork` | Delegate to the nudge wrapper | Prior context is restored, so re-running is redundant when the lock is still ours and an instruction is enough when a new process resumed an old session. |
 | unreadable or unrecognized | Full digest | Taking the helm redundantly is cheap and idempotent; not taking it is the bug this tier exists to fix. |
 
-A Claude background session still receives that full digest and does not take the helm.
-[Claude background sessions](#claude-background-sessions) owns that exception.
+[Claude background sessions](#claude-background-sessions) owns the lock-acquisition exception to this source routing.
 
 ### Change from the previous nudge matcher
 
@@ -96,8 +95,7 @@ The full digest updates the completion record in this order:
 2. It clears the completion record.
 3. It republishes the lock owner's pid only after every stage completes.
 
-A Claude background session that does not take the helm skips this update.
-[Claude background sessions](#claude-background-sessions) owns that exception.
+[Claude background sessions](#claude-background-sessions) owns the read-only exception, which leaves the completion record untouched.
 
 So `clear` or `compact` cannot skip startup sweeps after a truncated run.
 
@@ -106,7 +104,7 @@ So `clear` or `compact` cannot skip startup sweeps after a truncated run.
 - The shared ancestry verdict.
 - A trusted same-session Claude id.
 
-So a proven `clear` or `compact` re-emit re-verifies ownership and proceeds.
+Outside the [background startup exception](#claude-background-sessions), a proven `clear` or `compact` re-emit re-verifies ownership and proceeds.
 A lock another live session took meanwhile still produces the ordinary read-only digest.
 
 ### Nudge wrapper on a run-tier harness
@@ -115,7 +113,7 @@ On a run-tier harness, only `resume`, `reload`, and `fork` are routed to the nud
 The nudge wrapper has its own separate ancestry-only check, which normally stays silent when this process already holds the lock.
 A background Claude helper-chain recycle can break that ancestry.
 The wrapper may then emit a redundant nudge even though the shared same-session verdict still owns the lock.
-The requested session start remains idempotent.
+The requested session start follows the [background startup policy](#claude-background-sessions).
 
 ### Re-emit mechanics
 
@@ -243,13 +241,10 @@ Native stdout context injection is supported.
 
 ### Claude background sessions
 
-A Claude background session is one whose environment sets `CLAUDE_CODE_SESSION_KIND=bg`.
-At session open it does not acquire the fleet lock.
-It receives the ordinary read-only digest, which names `bin/fm-session-start.sh --take-helm`.
-That command acquires the lock when the lock is free or stale, the same way an ordinary startup does, and it leaves a lock a live session holds in place.
-A respawned background session leaves its recorded lock untouched and stays read-only until explicitly told to take the helm.
-Interactive sessions are unchanged.
-`bin/fm-session-start.sh` owns the exact decision.
+A Claude background session opens read-only and leaves the fleet lock untouched until explicitly told to take the helm.
+This applies even when its session id already has a live or stale lock recorded, including after a daemon respawn.
+The read-only digest supplies the explicit helm command; the [`bin/fm-session-start.sh` header](../bin/fm-session-start.sh) owns its flags, environment and ancestry detection, and acquisition rules.
+Interactive and positively identified non-Claude sessions retain ordinary acquisition.
 End a daemon background session with `claude stop <id>`, not `kill`, because the daemon respawns that worker under the same session id.
 
 ### Codex exec
@@ -433,7 +428,8 @@ Through the extension's public event surface, the same portable suite proves:
 
 `tests/fm-session-start.test.sh` proves a Claude background session leaves a free fleet lock free and names `bin/fm-session-start.sh --take-helm`.
 The same suite proves that command acquires a free lock and a stale lock, that it leaves a live holder in place, and that an interactive session still acquires a free lock.
-It also proves startup leaves a stale lock from another session in place, and that a background session keeps a lock it already holds, including a stale lock recorded under the same session id.
+It also checks that background startup leaves foreign stale and same-session live or stale lock records untouched, stays read-only for same-session records, and reclaims a stale same-session lock only with explicit helm acquisition.
+The non-Claude case checks that an inherited background marker does not prevent a positively identified Pi session from acquiring the lock.
 
 ### Runtime bound test
 

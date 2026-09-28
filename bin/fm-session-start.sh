@@ -27,7 +27,8 @@
 # was bootstrap-then-lock):
 #
 #   1. lock          - acquire the per-home session lock FIRST, before any
-#                       mutating step runs.
+#                       mutating step runs, subject to the --take-helm policy
+#                       below for Claude background sessions.
 #   2. bootstrap      - home-local stale Herdr projection cleanup runs only
 #                       when this session actually holds the lock. Detect-only
 #                       diagnostics always run. Bootstrap's six MUTATING sweeps
@@ -235,11 +236,12 @@
 #
 #   --take-helm
 #             Explicit helm for a Claude background session, identified by
-#             CLAUDE_CODE_SESSION_KIND=bg on a Claude-shaped ancestry (the
-#             value a live `claude --bg` spare and pty-host export; an
-#             interactive Claude session leaves it unset). Ordinary startup
-#             for that session stays read-only and does not acquire a free
-#             or foreign lock. This flag acquires exactly as an interactive
+#             CLAUDE_CODE_SESSION_KIND=bg unless ancestry resolves only to
+#             non-Claude harnesses. Missing or unreadable ancestry with that
+#             marker also defers acquisition. Ordinary startup for that
+#             session stays read-only and leaves every lock untouched,
+#             including a live or stale lock recorded for the same session.
+#             This flag acquires exactly as an interactive
 #             startup does: a free lock, a stale lock, or a lock this same
 #             session already holds, and it never steals a live holder.
 set -u
