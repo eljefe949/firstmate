@@ -20,7 +20,9 @@
 # bin/fm-startup-network.sh compares that pid across its deferred sweeps; a dead
 # recorded pid is reclaimed and rewritten to this session's anchor.
 #
-# Usage: fm-lock.sh           acquire; exit 1 unless ownership is verified
+# Usage: fm-lock.sh [--take-helm] acquire; exit 1 unless ownership is verified
+#        Background Claude sessions may confirm live ownership, but acquire
+#        free or stale locks only with explicit --take-helm.
 #        fm-lock.sh status    print holder and liveness; always exits 0.
 #                             A held lock is not proof the holder is consuming
 #                             wakes. Machine-readable lock fields live on
@@ -226,6 +228,13 @@ if [ -e "$LOCK" ] || [ -L "$LOCK" ]; then
       refuse_live_owner "$old"
     fi
   fi
+fi
+# Enforce acquisition policy under the claim lock, after live same-session
+# confirmation but before publishing either file. Stop hooks and direct calls
+# must not bypass the background session's explicit helm requirement.
+if [ "${1:-}" != --take-helm ] && fm_session_lock_background_session; then
+  echo "error: background Claude session requires explicit take-the-helm to acquire a free or stale fleet lock; operate read-only" >&2
+  exit 1
 fi
 # The sidecar goes first: a fresh pid beside a previous session's id would let
 # that session's resume own this lock. If the sidecar changes before line 1 is

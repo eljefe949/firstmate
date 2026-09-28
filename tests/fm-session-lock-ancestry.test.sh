@@ -636,6 +636,7 @@ SH
   cat > "$dir/spare.sh" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$$" > "$FM_HOME/state/spare-pid"
+export CLAUDE_CODE_SESSION_KIND=bg
 n=1
 while [ ! -e "$FM_HOME/state/stop-spare" ]; do
   req="$FM_HOME/state/fire-$n"
@@ -788,8 +789,8 @@ test_e2e_background_session_keeps_its_lock_across_a_recycled_chain() {
   fire_phase "$dir" 5 ''
   expect_phase_foreign "$dir" 5 4 "$frontend" "recycled chain, no id"
 
-  # Phase 6: the front-end exits; the same session reclaims its dead anchor
-  # onto the spare - the model-loop process - not onto the outermost pty-host.
+  # Phase 6: the front-end exits; a background Stop cannot reclaim its dead
+  # anchor even when the session id still matches.
   : > "$dir/state/stop-frontend"
   i=0
   while [ "$i" -lt 200 ] && kill -0 "$frontend" 2>/dev/null; do
@@ -798,7 +799,15 @@ test_e2e_background_session_keeps_its_lock_across_a_recycled_chain() {
   done
   kill -0 "$frontend" 2>/dev/null && fail "the front-end did not exit"
   fire_phase "$dir" 6 'export CLAUDE_CODE_SESSION_ID=S1; export CLAUDE_PID=$$'
-  expect_phase_owned "$dir" 6 6 "$spare" "dead front-end, same session"
+  expect_code 0 "$(phase_value "$dir" 6 hook.rc)" "dead owner: background Stop must stand down"
+  expect_code 1 "$(phase_value "$dir" 6 lock.rc)" "dead owner: background direct lock must refuse"
+  [ "$(arm_count "$dir")" = 4 ] || fail "dead owner: background Stop armed"
+  [ "$(phase_value "$dir" 6 lock-after)" = "$frontend" ] || fail "dead owner: background session reclaimed the lock"
+  cmp -s "$dir/state/phase-6/session-after" "$dir/sidecar-initial" || fail "dead owner: sidecar changed"
+
+  # Explicit helm acquisition restores supervision onto the model-loop pid.
+  fire_phase "$dir" 7 'export CLAUDE_CODE_SESSION_ID=S1; export CLAUDE_PID=$$; "$FM_HOME/bin/fm-lock.sh" --take-helm'
+  expect_phase_owned "$dir" 7 6 "$spare" "explicit helm after dead front-end"
   [ "$spare" != "$ptyhost" ] || fail "fixture collapsed the spare into the pty-host"
 
   : > "$dir/state/stop-spare"

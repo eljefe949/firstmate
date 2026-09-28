@@ -140,6 +140,32 @@ fm_harness_ancestry_pids() {
   [ "$printed" -eq 1 ]
 }
 
+# True when this process is a Claude background session.
+# CLAUDE_CODE_SESSION_KIND=bg is the vendor signal a live `claude --bg` spare
+# and pty-host export. A walk that resolves only a non-Claude harness returns
+# false so that harness still acquires normally. A walk that fails, or that
+# cannot be re-read, stays true, because treating the signal as absent would
+# take the lock.
+fm_session_lock_background_session() {
+  [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ] || return 1
+  local pids pid comm args saw_harness=0
+  pids=$(fm_harness_ancestry_pids) || return 0
+  while IFS= read -r pid; do
+    [ -n "$pid" ] || continue
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 0
+    args=$(ps -o args= -p "$pid" 2>/dev/null) || return 0
+    fm_harness_process_matches "$comm" "$args" || return 0
+    saw_harness=1
+    if [ "${FM_HARNESS_IS_CLAUDE:-0}" -eq 1 ]; then
+      return 0
+    fi
+  done <<EOF
+$pids
+EOF
+  [ "$saw_harness" -eq 1 ] && return 1
+  return 0
+}
+
 # Print the outermost pid of this session's contiguous harness run for callers
 # that need that ancestry identity. This is not necessarily the pid written to
 # the session lock: fm_session_lock_anchor_pid owns that choice and uses a
@@ -248,9 +274,9 @@ fm_session_lock_same_session() {  # <state> [<ancestry-pids>]
 # never the shared transient daemon and never a front-end that outlives the
 # session, so "recorded pid dead" keeps meaning "session gone" instead of
 # wedging a home behind a live daemon whose session died. A replaced background
-# helper leaves a dead pid that its own session's next hook reclaims, because
-# the sidecar still names that session. Every other session records the
-# outermost pid of its contiguous run, exactly as before.
+# helper leaving a dead pid needs explicit take-the-helm to reclaim the lock.
+# Every other session records the outermost pid of its contiguous run, exactly
+# as before.
 fm_session_lock_anchor_pid() {
   local pids
   pids=$(fm_harness_ancestry_pids) || return 1

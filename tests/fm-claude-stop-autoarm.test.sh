@@ -304,6 +304,45 @@ test_reclaims_stale_session_lock_before_arming() {
   pass "auto-arm: a demonstrably dead recorded session owner is reclaimed through fm-lock.sh before arming"
 }
 
+test_background_cannot_reclaim_stale_lock() {
+  local dir out status mode lock_state
+  for mode in stop direct; do
+    for lock_state in stale free; do
+      dir=$(make_primary_dir "$TMP_ROOT/bg-$mode-$lock_state")
+      : > "$dir/state/task.meta"
+      if [ "$lock_state" = stale ]; then
+        printf '9999999\n' > "$dir/state/.lock"
+        printf 'bg-session\n' > "$dir/state/.lock-session"
+      fi
+      write_arm_fixture "$dir" actionable
+      out=$(printf '%s\n' '{"session_id":"bg-session"}' \
+        | FM_HOME="$dir" CLAUDE_CODE_SESSION_KIND=bg CLAUDE_CODE_SESSION_ID=bg-session \
+          TEST_LOCK_MODE="$mode" "$FAKE_CLAUDE" -c '
+            export CLAUDE_PID=$$
+            if [ "$TEST_LOCK_MODE" = stop ]; then
+              "$FM_HOME/bin/fm-claude-stop-autoarm.sh"
+            else
+              "$FM_HOME/bin/fm-lock.sh"
+            fi
+          ' 2>&1); status=$?
+      if [ "$mode" = stop ]; then
+        expect_code 0 "$status" "background Stop must stay inert with a $lock_state lock"
+      else
+        expect_code 1 "$status" "background direct acquisition must refuse a $lock_state lock"
+      fi
+      if [ "$lock_state" = stale ]; then
+        [ "$(cat "$dir/state/.lock")" = 9999999 ] || fail "background $mode reclaimed a stale lock"
+        [ "$(cat "$dir/state/.lock-session")" = bg-session ] || fail "background $mode changed the session sidecar"
+      else
+        [ ! -e "$dir/state/.lock" ] || fail "background $mode acquired a free lock"
+        [ ! -e "$dir/state/.lock-session" ] || fail "background $mode published a session sidecar"
+      fi
+      [ ! -e "$dir/state/arm-ran" ] || fail "background $mode armed without explicit helm acquisition"
+    done
+  done
+  pass "auto-arm: background Stop and direct lock calls leave free and same-session stale locks untouched"
+}
+
 test_inert_when_lock_held_by_other_harness() {
   local dir other out status owner_after
   dir=$(make_primary_dir "$TMP_ROOT/other-lock")
@@ -1598,6 +1637,7 @@ test_fm_lock_status_still_works_with_shared_lib() {
 test_inert_in_child_worktree
 test_inert_without_session_lock
 test_reclaims_stale_session_lock_before_arming
+test_background_cannot_reclaim_stale_lock
 test_inert_when_lock_held_by_other_harness
 test_inert_when_afk
 test_stale_lock_recovery_preserves_afk_and_need_gates

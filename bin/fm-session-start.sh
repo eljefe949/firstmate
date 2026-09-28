@@ -682,44 +682,20 @@ if [ "$REEMIT" -eq 1 ]; then
 else
   section "SESSION START - $FM_HOME"
 fi
-# True when this process is a Claude background session.
-# CLAUDE_CODE_SESSION_KIND=bg is the vendor signal a live `claude --bg` spare
-# and pty-host export. A walk that resolves only a non-Claude harness returns
-# false so that harness still acquires normally. A walk that fails, or that
-# cannot be re-read, stays true, because treating the signal as absent would
-# take the lock.
-claude_background_session() {
-  [ "${CLAUDE_CODE_SESSION_KIND:-}" = bg ] || return 1
-  local pids pid comm args saw_harness=0
-  pids=$(fm_harness_ancestry_pids) || return 0
-  while IFS= read -r pid; do
-    [ -n "$pid" ] || continue
-    comm=$(ps -o comm= -p "$pid" 2>/dev/null) || return 0
-    args=$(ps -o args= -p "$pid" 2>/dev/null) || return 0
-    fm_harness_process_matches "$comm" "$args" || return 0
-    saw_harness=1
-    if [ "${FM_HARNESS_IS_CLAUDE:-0}" -eq 1 ]; then
-      return 0
-    fi
-  done <<EOF
-$pids
-EOF
-  [ "$saw_harness" -eq 1 ] && return 1
-  return 0
-}
-
 # --- 1. lock -----------------------------------------------------------
 stage lock
 subsection "LOCK"
 BG_DEFER=0
 READ_ONLY=0
-if [ "$TAKE_HELM" -eq 0 ] && claude_background_session; then
+if [ "$TAKE_HELM" -eq 0 ] && fm_session_lock_background_session; then
   BG_DEFER=1
   READ_ONLY=1
   LOCK_OUT='background Claude session left the fleet lock untouched; take the helm with bin/fm-session-start.sh --take-helm when explicitly told (acquires a free or stale lock, and leaves a live holder in place)'
   printf '%s\n' "$LOCK_OUT"
 else
-  LOCK_OUT=$("$SCRIPT_DIR/fm-lock.sh" 2>&1)
+  lock_args=("$SCRIPT_DIR/fm-lock.sh")
+  [ "$TAKE_HELM" -eq 1 ] && lock_args+=(--take-helm)
+  LOCK_OUT=$("${lock_args[@]}" 2>&1)
   LOCK_RC=$?
   printf '%s\n' "$LOCK_OUT"
   if [ "$LOCK_RC" -ne 0 ]; then
