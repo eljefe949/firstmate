@@ -102,6 +102,7 @@ case "$*" in
     printf 'pid=%s session=%s leader=%s\n' "$$" "${3:-}" "$leader" > "$FM_FAKE_STATE/started"
     if [ -f "$FM_FAKE_STATE/serve" ]; then
       trap 'printf "TERM\n" > "$FM_FAKE_STATE/signalled"; exit 0' TERM
+      printf 'ready\n' > "$FM_FAKE_STATE/ready"
       while :; do sleep 0.1; done
     fi
     [ ! -f "$FM_FAKE_STATE/server-exit" ] || exit "$(cat "$FM_FAKE_STATE/server-exit")"
@@ -233,13 +234,30 @@ pass "the guard exits with the server's status so launchd's SuccessfulExit polic
 
 new_case stopped
 touch "$CASE_STATE/serve"
+cat > "$CASE_STATE/forward-term.sh" <<'SH'
+kill() {
+  builtin kill "$@" || return "$?"
+  if [ "${1:-}" = -TERM ]; then
+    local attempts=0
+    while builtin kill -0 "$2" 2>/dev/null && [ "$attempts" -lt 100 ]; do
+      sleep 0.01
+      attempts=$((attempts + 1))
+    done
+    if ! builtin kill -0 "$2" 2>/dev/null; then
+      printf 'exited\n' > "$FM_FAKE_STATE/exited-before-trap-return"
+    fi
+  fi
+}
+SH
 env -i PATH="$CASE_PATH" HOME="$TMP_ROOT" \
+  BASH_ENV="$CASE_STATE/forward-term.sh" \
   FM_FAKE_STATE="$CASE_STATE" FM_FAKE_HERDR_LOG="$CASE_LOG" FM_FAKE_HERDR_RUNNING="$CASE_RUNNING" \
   FM_FAKE_SOCKET_OWNER="$CASE_OWNER" FM_FAKE_HERDR_SOCKET="$CASE_SOCKET" \
   "$GUARD" "$FAKE/herdr" "$SESSION" > "$CASE_STATE/guard.out" 2>&1 &
 GUARD_PID=$!
 i=0
-while [ ! -s "$CASE_STATE/started" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+while [ ! -s "$CASE_STATE/ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+[ -s "$CASE_STATE/ready" ] || fail "the server did not install its TERM handler"
 assert_grep "leader=yes" "$CASE_STATE/started" "the long-running server does not lead its own session"
 server_pid=$(sed -n 's/^pid=\([0-9]*\) .*/\1/p' "$CASE_STATE/started")
 [ "$server_pid" != "$GUARD_PID" ] || fail "the server replaced the guard instead of running as its child"
@@ -249,6 +267,7 @@ set +e
 wait "$GUARD_PID"
 rc=$?
 set -e
+assert_grep "exited" "$CASE_STATE/exited-before-trap-return" "the server did not exit before the guard's TERM trap returned"
 expect_code 0 "$rc" "the guard did not exit with the server's status after a forwarded TERM"
 assert_grep "TERM" "$CASE_STATE/signalled" "the guard did not forward TERM to its server"
 kill -0 "$server_pid" 2>/dev/null && fail "the server outlived the guard after TERM"

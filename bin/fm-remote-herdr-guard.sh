@@ -72,7 +72,7 @@ status_running() { # <status-json>
 }
 
 start_server() {
-  local server rc
+  local server rc final_rc interrupted=0
   if ! command -v perl >/dev/null 2>&1; then
     log "perl does not resolve, so the herdr server for session $SESSION cannot lead its own session; exec-ing it in this launch agent (pid $$)"
     exec "$HERDR_BIN" server --session "$SESSION"
@@ -81,9 +81,9 @@ start_server() {
   perl -MPOSIX -e 'POSIX::setsid() > 0 or die "setsid: $!\n"; exec { $ARGV[0] } @ARGV or die "exec: $!\n"' \
     "$HERDR_BIN" server --session "$SESSION" &
   server=$!
-  trap 'kill -TERM "$server" 2>/dev/null' TERM
-  trap 'kill -INT "$server" 2>/dev/null' INT
-  trap 'kill -HUP "$server" 2>/dev/null' HUP
+  trap 'interrupted=1; kill -TERM "$server" 2>/dev/null' TERM
+  trap 'interrupted=1; kill -INT "$server" 2>/dev/null' INT
+  trap 'interrupted=1; kill -HUP "$server" 2>/dev/null' HUP
   log "started the herdr server for session $SESSION as session leader pid $server under this launch agent (pid $$)"
   # A forwarded signal interrupts wait before the server exits, so wait again until it is gone.
   while :; do
@@ -91,6 +91,11 @@ start_server() {
     rc=$?
     kill -0 "$server" 2>/dev/null || break
   done
+  if [ "$interrupted" -eq 1 ]; then
+    wait "$server"
+    final_rc=$?
+    [ "$final_rc" -eq 127 ] || rc=$final_rc
+  fi
   log "the herdr server for session $SESSION (pid $server) exited with status $rc"
   exit "$rc"
 }
