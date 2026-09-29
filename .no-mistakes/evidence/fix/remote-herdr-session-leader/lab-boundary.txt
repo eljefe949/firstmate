@@ -1,0 +1,5 @@
+Darwin; herdr resolves to /opt/homebrew/bin/herdr.
+Lab prepare fm-lab-remote-guard-0929 exited 0; no server provisioned.
+Lab run fm-lab-remote-guard-0929 server --help exited 1:
+fm-herdr-lab: run forbids server operations; use provision for the named lab server
+The authorized helper has no guard-under-launchd launch path. System changes outside the worktree are forbidden. No saved machine or sidebar rendering was exercised.
