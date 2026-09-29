@@ -35,11 +35,12 @@ SESSION=fm-remote
 # so a case can also present a host with NO lsof.
 TOOLS="$TMP_ROOT/tools"
 mkdir -p "$TOOLS"
-command -v perl >/dev/null 2>&1 || { echo "skip: perl not found (the guard's session-leader shim is perl)"; exit 0; }
-for tool in ps awk sed grep tr dirname basename sleep cat cp rm env bash sh id head perl; do
+for tool in ps awk sed grep tr dirname basename sleep cat cp rm env bash sh id head; do
   real=$(command -v "$tool") || fail "test host lacks $tool"
   ln -sf "$real" "$TOOLS/$tool"
 done
+PERL=$(command -v perl || true)
+[ -z "$PERL" ] || ln -sf "$PERL" "$TOOLS/perl"
 ln -sf "$JQ" "$TOOLS/jq"
 TOOLS_NO_PERL="$TMP_ROOT/tools-no-perl"
 mkdir -p "$TOOLS_NO_PERL"
@@ -222,19 +223,22 @@ expect_code 0 "$GUARD_RC" "the guard failed when no server owned the session"
 assert_started "the guard did not start the server when none owned the session"
 assert_not_contains "$(herdr_calls)" 'server stop' "the guard stopped something when no server owned the session"
 assert_contains "$GUARD_OUT" "no server owns session $SESSION" "the guard did not report the empty session"
-assert_grep "leader=yes" "$CASE_STATE/started" "the started server does not lead its own session, so Herdr refuses it as a saved machine"
-pass "an empty session is started inside the launch agent as its own session leader"
+pass "an empty session starts a server without stopping another owner"
 
-new_case stopped
-printf '3\n' > "$CASE_STATE/server-exit"
-guard
-expect_code 3 "$GUARD_RC" "the guard did not exit with the server's status"
-assert_contains "$GUARD_OUT" "exited with status 3" "the guard did not report the server's exit"
-pass "the guard exits with the server's status so launchd's SuccessfulExit policy still applies"
+if [ -n "$PERL" ]; then
+  assert_grep "leader=yes" "$CASE_STATE/started" "the started server does not lead its own session, so Herdr refuses it as a saved machine"
+  pass "an empty session is started inside the launch agent as its own session leader"
 
-new_case stopped
-touch "$CASE_STATE/serve"
-cat > "$CASE_STATE/forward-term.sh" <<'SH'
+  new_case stopped
+  printf '3\n' > "$CASE_STATE/server-exit"
+  guard
+  expect_code 3 "$GUARD_RC" "the guard did not exit with the server's status"
+  assert_contains "$GUARD_OUT" "exited with status 3" "the guard did not report the server's exit"
+  pass "the guard exits with the server's status so launchd's SuccessfulExit policy still applies"
+
+  new_case stopped
+  touch "$CASE_STATE/serve"
+  cat > "$CASE_STATE/forward-term.sh" <<'SH'
 kill() {
   builtin kill "$@" || return "$?"
   if [ "${1:-}" = -TERM ]; then
@@ -249,29 +253,32 @@ kill() {
   fi
 }
 SH
-env -i PATH="$CASE_PATH" HOME="$TMP_ROOT" \
-  BASH_ENV="$CASE_STATE/forward-term.sh" \
-  FM_FAKE_STATE="$CASE_STATE" FM_FAKE_HERDR_LOG="$CASE_LOG" FM_FAKE_HERDR_RUNNING="$CASE_RUNNING" \
-  FM_FAKE_SOCKET_OWNER="$CASE_OWNER" FM_FAKE_HERDR_SOCKET="$CASE_SOCKET" \
-  "$GUARD" "$FAKE/herdr" "$SESSION" > "$CASE_STATE/guard.out" 2>&1 &
-GUARD_PID=$!
-i=0
-while [ ! -s "$CASE_STATE/ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
-[ -s "$CASE_STATE/ready" ] || fail "the server did not install its TERM handler"
-assert_grep "leader=yes" "$CASE_STATE/started" "the long-running server does not lead its own session"
-server_pid=$(sed -n 's/^pid=\([0-9]*\) .*/\1/p' "$CASE_STATE/started")
-[ "$server_pid" != "$GUARD_PID" ] || fail "the server replaced the guard instead of running as its child"
-kill -0 "$GUARD_PID" 2>/dev/null || fail "the guard left the foreground while its server was still running"
-kill -TERM "$GUARD_PID"
-set +e
-wait "$GUARD_PID"
-rc=$?
-set -e
-assert_grep "exited" "$CASE_STATE/exited-before-trap-return" "the server did not exit before the guard's TERM trap returned"
-expect_code 0 "$rc" "the guard did not exit with the server's status after a forwarded TERM"
-assert_grep "TERM" "$CASE_STATE/signalled" "the guard did not forward TERM to its server"
-kill -0 "$server_pid" 2>/dev/null && fail "the server outlived the guard after TERM"
-pass "the guard stays launchd's foreground job and forwards TERM to its session-leader server"
+  env -i PATH="$CASE_PATH" HOME="$TMP_ROOT" \
+    BASH_ENV="$CASE_STATE/forward-term.sh" \
+    FM_FAKE_STATE="$CASE_STATE" FM_FAKE_HERDR_LOG="$CASE_LOG" FM_FAKE_HERDR_RUNNING="$CASE_RUNNING" \
+    FM_FAKE_SOCKET_OWNER="$CASE_OWNER" FM_FAKE_HERDR_SOCKET="$CASE_SOCKET" \
+    "$GUARD" "$FAKE/herdr" "$SESSION" > "$CASE_STATE/guard.out" 2>&1 &
+  GUARD_PID=$!
+  i=0
+  while [ ! -s "$CASE_STATE/ready" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+  [ -s "$CASE_STATE/ready" ] || fail "the server did not install its TERM handler"
+  assert_grep "leader=yes" "$CASE_STATE/started" "the long-running server does not lead its own session"
+  server_pid=$(sed -n 's/^pid=\([0-9]*\) .*/\1/p' "$CASE_STATE/started")
+  [ "$server_pid" != "$GUARD_PID" ] || fail "the server replaced the guard instead of running as its child"
+  kill -0 "$GUARD_PID" 2>/dev/null || fail "the guard left the foreground while its server was still running"
+  kill -TERM "$GUARD_PID"
+  set +e
+  wait "$GUARD_PID"
+  rc=$?
+  set -e
+  assert_grep "exited" "$CASE_STATE/exited-before-trap-return" "the server did not exit before the guard's TERM trap returned"
+  expect_code 0 "$rc" "the guard did not exit with the server's status after a forwarded TERM"
+  assert_grep "TERM" "$CASE_STATE/signalled" "the guard did not forward TERM to its server"
+  kill -0 "$server_pid" 2>/dev/null && fail "the server outlived the guard after TERM"
+  pass "the guard stays launchd's foreground job and forwards TERM to its session-leader server"
+else
+  echo "skip: perl not found (session-leader, exit-status and TERM-forwarding cases require perl)"
+fi
 
 new_case stopped
 CASE_PATH="$FAKE:$TOOLS_NO_PERL"
