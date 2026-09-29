@@ -1108,7 +1108,14 @@ Its `ProgramArguments` ran `/run/current-system/sw/bin/zsh -l -c "exec /etc/prof
 No other herdr process existed for that session, and after 15 seconds the job remained running with pid 4806.
 After a guarded `herdr session stop`, the job reported `state = not running` and `last exit code = 0`, and it stayed at rest through the throttle interval.
 A second `launchctl kickstart -k gui/501/dev.fm-rca.herdr-fg` started pid 45574, which was also the new socket owner.
-This proves that `herdr server` remains in the foreground as the launchd job, so the guard's final `exec` supplies the intended supervision and the earlier server that survived `launchctl bootout` was the unrelated SSH-bridge-born process.
+This proves that `herdr server` remains in the foreground as the launchd job, so the guard supervises the server for as long as it runs and the earlier server that survived `launchctl bootout` was the unrelated SSH-bridge-born process.
+
+A saved-machine check ran on 2026-09-29 on macOS 27.0 (26A428) with Herdr 0.9.1 on the remote host and the primary.
+With the guard exec-ing the server, `ps -o pid,ppid,pgid,stat` reported `335 1 335 S`, a process-group leader but not a session leader, and `herdr --session fm-remote status server --json` reported `"detached_server_daemon":false`.
+Herdr 0.9.1 derives that capability from `getsid(0) == getpid()` (`src/platform/mod.rs`) and refuses a saved machine without it (`src/remote/restart_policy.rs`), so `herdr machine add --label mini --remote-session fm-remote mini` printed `error: remote server is not ready for saved machines; machine was not saved`.
+With the guard starting the server through its perl setsid shim, the server reported `85864 85840 85864 Ss` with the guard pid 85840 as its parent, `launchctl print gui/503/dev.firstmate.herdr.fm-remote` reported `pid = 85840`, and the status reported `"detached_server_daemon":true`.
+That forked server's environment carried `XPC_SERVICE_NAME=0` rather than the job label, so `fm_remote_herdr_owner_birth` proves its launchd birth from the parent pid; it printed `launchd` for pid 85864.
+The same `herdr machine add` then printed `Saved SSH machine 5d6f84af5f116cfb502607d3475bf5a1. Remote server is ready.`, and `herdr machine list` listed `mini mini fm-remote enabled`.
 
 `bin/fm-test-run.sh tests/fm-remote-herdr-guard.test.sh` pins the resulting decision table against real marker-carrying processes, and `tests/fm-remote-doctor.test.sh` pins the doctor's verdicts on the same markers.
 

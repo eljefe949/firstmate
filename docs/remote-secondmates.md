@@ -270,12 +270,23 @@ It acts on whichever server owns the `fm-remote` socket:
 
 | Socket owner | Guard action |
 | --- | --- |
-| Nothing | Execs the server in the foreground under launchd. |
+| Nothing | Starts the server as its own session leader and stays in the foreground under launchd. |
 | An Aqua-born server | Exits 0. |
 | Any other (foreign) server | Stops the foreign server and takes the session over, closing its panes so the parent firstmate relaunches its mates into the Aqua-born server. |
 
 `KeepAlive={SuccessfulExit=false}` lets that exit 0 rest instead of respawning against a held socket.
 The guard's header owns the decision table, and [`bin/fm-remote-herdr-owner-lib.sh`](../bin/fm-remote-herdr-owner-lib.sh) owns the birth markers it reads.
+
+### Show the remote host in the primary's Herdr sidebar
+
+Because the guard's server leads its own session, the primary can save the host as a Herdr machine, which lists the remote second mate's `fm-remote` workspaces in the primary's machines sidebar:
+
+```sh
+herdr machine add --label <label> --remote-session fm-remote <ssh-alias>
+herdr machine list
+```
+
+Herdr refuses the machine while the remote server is still one the guard started before it led its own session; restart that server once through the guard.
 
 ### Other repairs and limits
 

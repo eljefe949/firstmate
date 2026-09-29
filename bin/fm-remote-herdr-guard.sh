@@ -13,18 +13,25 @@
 # Aqua audit session and login-keychain access; the login shell only gives the
 # server the account's own environment.
 # `herdr server` stays in the foreground under launchd, as verified in
-# docs/verification/runtime-backends.md under "fm-remote server birth and login-keychain access", so the final exec provides the complete supervision lifecycle.
+# docs/verification/runtime-backends.md under "fm-remote server birth and login-keychain access".
+# The server must also lead its own POSIX session: Herdr accepts a saved SSH
+# machine only when the remote server reports detached_server_daemon, which it
+# derives from getsid(0) == getpid(). launchd makes this job a process-group
+# leader, so setsid() in place fails; the guard instead starts the server
+# through a perl setsid shim as its child, stays launchd's foreground job,
+# forwards TERM, INT, and HUP to it, and exits with its status. Without perl it
+# falls back to exec, which keeps supervision but not saved-machine support.
 #
 # Decision, made once per launch (exit codes matter under SuccessfulExit=false:
 # 0 tells launchd the job is done until something restarts it, non-zero asks
 # for a retry after the throttle interval):
-#   no server owns the session socket  -> exec `herdr server --session <s>`
-#                                          (foreground, launchd-supervised)
+#   no server owns the session socket  -> start `herdr server --session <s>`
+#                                          (session leader, launchd-supervised)
 #   the owner was born in the Aqua session (launchd or the Aqua remote-job
 #   worker)                            -> exit 0, leave it alone
 #   the owner was born anywhere else (an SSH remote attach, a shell over
 #   ssh/mosh, or a birth it cannot prove) -> `herdr server stop`, wait until the
-#                                          socket is released, then exec
+#                                          socket is released, then start
 #                                          `herdr server --session <s>` at once
 #                                          so the socket is rebound before a
 #                                          reconnecting SSH attach can start
@@ -65,8 +72,27 @@ status_running() { # <status-json>
 }
 
 start_server() {
-  log "starting the herdr server for session $SESSION inside this launch agent (pid $$)"
-  exec "$HERDR_BIN" server --session "$SESSION"
+  local server rc
+  if ! command -v perl >/dev/null 2>&1; then
+    log "perl does not resolve, so the herdr server for session $SESSION cannot lead its own session; exec-ing it in this launch agent (pid $$)"
+    exec "$HERDR_BIN" server --session "$SESSION"
+  fi
+  # shellcheck disable=SC2016  # $! and @ARGV are perl's, not the shell's.
+  perl -MPOSIX -e 'POSIX::setsid() > 0 or die "setsid: $!\n"; exec { $ARGV[0] } @ARGV or die "exec: $!\n"' \
+    "$HERDR_BIN" server --session "$SESSION" &
+  server=$!
+  trap 'kill -TERM "$server" 2>/dev/null' TERM
+  trap 'kill -INT "$server" 2>/dev/null' INT
+  trap 'kill -HUP "$server" 2>/dev/null' HUP
+  log "started the herdr server for session $SESSION as session leader pid $server under this launch agent (pid $$)"
+  # A forwarded signal interrupts wait before the server exits, so wait again until it is gone.
+  while :; do
+    wait "$server"
+    rc=$?
+    kill -0 "$server" 2>/dev/null || break
+  done
+  log "the herdr server for session $SESSION (pid $server) exited with status $rc"
+  exit "$rc"
 }
 
 STATUS=$(herdr_status)
