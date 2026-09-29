@@ -9,10 +9,10 @@
 # shell running `exec <this script> <herdr> fm-remote` with
 # LimitLoadToSessionType=Aqua, RunAtLoad, KeepAlive={SuccessfulExit=false},
 # and ThrottleInterval=10, then bootstraps it into gui/<uid>. That domain, not
-# the login shell, is what gives this process and every server it execs the
+# the login shell, is what gives this process and every server it starts the
 # Aqua audit session and login-keychain access; the login shell only gives the
 # server the account's own environment.
-# `herdr server` stays in the foreground under launchd, as verified in
+# Foreground-server and saved-machine evidence is recorded in
 # docs/verification/runtime-backends.md under "fm-remote server birth and login-keychain access".
 # The server must also lead its own POSIX session: Herdr accepts a saved SSH
 # machine only when the remote server reports detached_server_daemon, which it

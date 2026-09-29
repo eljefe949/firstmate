@@ -2,7 +2,7 @@
 # Who owns a Herdr session socket, and was that process born in the Aqua
 # login session?
 #
-# Source this file; it defines functions only. It is the single owner of the
+# Source this file for its functions and launch-agent label. It is the single owner of the
 # socket-owner discovery and birth classification shared by
 # bin/fm-remote-herdr-guard.sh (the launch agent's exec target) and
 # bin/fm-remote-doctor.sh (the readiness check for that session).
