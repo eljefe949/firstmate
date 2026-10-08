@@ -1,0 +1,6 @@
+ok - a leaked descendant process rooted under the task's worktree is reaped by teardown, not left surviving
+ok - a leaked descendant process rooted under the task's per-task tasktmp is reaped by teardown too
+ok - a setsid child outside the worktree is reaped with its cwd-owned parent, and an unrelated sleeper is not
+ok - a recorded bridge whose previous directory is the worktree is reaped with its setsid child, and same-named processes that are not this task's are not
+ok - an erroring lsof scan refuses teardown and preserves the task
+ok - a reused pid with a different start time is never force-killed

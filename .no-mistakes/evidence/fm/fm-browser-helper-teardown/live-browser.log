@@ -1,0 +1,42 @@
+/Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M4EM0PGDJ8FNY75QCZHBEC9R/.gate-browser-lab
+status: ready
+port: 10206
+pages[1]{id,url,selected}:
+  1,about:blank,false
+help[2]:
+  Run `chrome-devtools-axi selectpage <id>` to switch tabs
+  Run `chrome-devtools-axi newpage <url>` to open a new tab
+status: ready
+port: 9606
+58536     1 node /Users/shanahanland/.npm-global/lib/node_modules/chrome-devtools-axi/dist/bin/chrome-devtools-axi-bridge.js
+real bridge PWD: /Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M4EM0PGDJ8FNY75QCZHBEC9R/.gate-browser-lab/task
+Owned process identities before exit:
+58536     1 node
+58539 58536 npm exec chrome-devtools-mcp@latest --isolated --headless --chrome-arg=--use-mock-keychain --chrome-arg=--password-store=basic
+58813 58539 chrome-devtools-mcp
+58816 58813 /opt/homebrew/Cellar/node/26.8.1/bin/node
+58929 58813 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+58935 58929 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.98/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper
+58936 58929 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.98/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper
+58937 58929 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.98/Helpers/Google Chrome Helper.app/Contents/MacOS/Google Chrome Helper
+58943 58929 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.98/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)
+58944 58929 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/154.0.8037.98/Helpers/Google Chrome Helper (Renderer).app/Contents/MacOS/Google Chrome Helper (Renderer)
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M4EM0PGDJ8FNY75QCZHBEC9R/.gate-browser-lab
+already-stopped browser harness=claude backend=tmux endpoint=fm-lab:fm-browser worktree=/Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M4EM0PGDJ8FNY75QCZHBEC9R/.gate-browser-lab/task
+SECOND MATE: real bridge survives exit as required
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M4EM0PGDJ8FNY75QCZHBEC9R/.gate-browser-lab
+teardown: reaping leaked browser process(es) for browser: 58536 58539 58813 58816 58929 58935 58936 58937 58943 58944
+already-stopped browser harness=claude backend=tmux endpoint=fm-lab:fm-browser worktree=/Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M4EM0PGDJ8FNY75QCZHBEC9R/.gate-browser-lab/task
+OWNERSHIP: unrelated real bridge 58986 survives
+SHIP: real bridge and all observed descendants stopped; work, metadata, and unrelated sleeper preserved
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M4EM0PGDJ8FNY75QCZHBEC9R/.gate-browser-lab
+already-stopped browser harness=claude backend=tmux endpoint=fm-lab:fm-browser worktree=/Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M4EM0PGDJ8FNY75QCZHBEC9R/.gate-browser-lab/task
+REPEAT: exit remains successful
+status: ready
+port: 10206
+fm-gate-refuse: gate agent lifecycle permitted only against lab home /Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M4EM0PGDJ8FNY75QCZHBEC9R/.gate-browser-lab
+teardown: reaping leaked browser process(es) for browser: 60415 60418 60469 60471 60488 60492 60493 60494 60497 60498
+already-stopped browser harness=claude backend=tmux endpoint=fm-lab:fm-browser worktree=/Users/shanahanland/.no-mistakes/worktrees/8fa157dc1b32/01M4EM0PGDJ8FNY75QCZHBEC9R/.gate-browser-lab/task
+SCOUT: owned real bridge stopped; unrelated real bridge survives
+status: stopped (no-op)
+status: stopped
